@@ -47,15 +47,6 @@ input:focus,select:focus{border-color:#D9782C;background:#fff;}
         <input type="number" name="minimum_stock" step="0.01" min="0" value="0" required>
     </div>
     <div style="grid-column:1/-1;">
-        <label>Site</label>
-        <select name="site_id">
-            <option value="">— Unassigned —</option>
-            @foreach($sites as $site)
-                <option value="{{ $site->id }}">{{ $site->site_name }}</option>
-            @endforeach
-        </select>
-    </div>
-    <div style="grid-column:1/-1;">
         <label>Notes</label>
         <textarea name="notes" rows="2"></textarea>
     </div>

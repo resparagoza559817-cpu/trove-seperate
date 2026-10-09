@@ -53,7 +53,7 @@ class DashboardController extends Controller
             }
             $caps = [];
             foreach ($product->materials as $mat) {
-                $need = (float) $mat->pivot->quantity_used;
+                $need = (float) $mat->pivot->quantity_needed;
                 if ($need > 0) {
                     $caps[] = (int) floor($mat->quantity_on_hand / $need);
                 }

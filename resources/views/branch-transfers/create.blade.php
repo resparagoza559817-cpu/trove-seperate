@@ -47,15 +47,18 @@ td{padding:8px 12px;border-bottom:1px solid #f3f4f6;vertical-align:top;}
     <div class="card-title">Batch Details</div>
     <div class="grid">
         <div>
-            <label>From (Source) *</label>
-            <select name="source_site_id">
-                @foreach($sites as $s)<option value="{{ $s->id }}" {{ stripos($s->site_name,'matina')!==false?'selected':'' }}>{{ $s->site_name }}</option>@endforeach
-            </select>
+            <label>From (Source)</label>
+            @php $matina = $sites->first(fn ($s) => stripos($s->site_name, 'matina') !== false); @endphp
+            <input type="text" value="{{ $matina->site_name ?? 'Matina' }}" readonly style="background:#f3f4f6;color:#6b7280;">
+            <input type="hidden" name="source_site_id" value="{{ $matina->id ?? '' }}">
         </div>
         <div>
             <label>To (Destination) *</label>
-            <select name="destination_site_id">
-                @foreach($sites as $s)<option value="{{ $s->id }}" {{ stripos($s->site_name,'jacinto')!==false?'selected':'' }}>{{ $s->site_name }}</option>@endforeach
+            <select name="destination_site_id" required>
+                <option value="">- Select destination -</option>
+                @foreach($sites->where('id', '!=', $matina->id ?? null) as $s)
+                    <option value="{{ $s->id }}" {{ old('destination_site_id') == $s->id ? 'selected' : '' }}>{{ $s->site_name }}</option>
+                @endforeach
             </select>
         </div>
         <div>

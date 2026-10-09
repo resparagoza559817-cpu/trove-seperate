@@ -179,7 +179,7 @@ class DatabaseSeeder extends Seeder
                 $attach = [];
                 foreach ($p['recipe'] as $itemName => $qtyUsed) {
                     if (isset($inv[$itemName])) {
-                        $attach[$inv[$itemName]->id] = ['quantity_used' => $qtyUsed];
+                        $attach[$inv[$itemName]->id] = ['quantity_needed' => $qtyUsed];
                     }
                 }
                 $product->materials()->attach($attach);

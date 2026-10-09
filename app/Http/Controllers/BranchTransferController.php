@@ -32,7 +32,7 @@ class BranchTransferController extends Controller
     {
         $validated = $request->validate([
             'source_site_id'      => 'nullable|exists:sites,id',
-            'destination_site_id' => 'nullable|exists:sites,id',
+            'destination_site_id' => 'required|exists:sites,id|different:source_site_id',
             'batch_date'          => 'required|date',
             'items'               => 'required|array|min:1',
             'items.*.product_id'  => 'required|exists:products,id',

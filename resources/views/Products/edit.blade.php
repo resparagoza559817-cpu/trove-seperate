@@ -41,11 +41,10 @@ td{padding:10px 12px;border-bottom:1px solid #f9fafb;}
         </div>
         <div>
             <label>Category</label>
-            <select name="category">
-                <option value="">- Select -</option>
-                <option value="Cake" {{ old('category', $product->category) === 'Cake' ? 'selected' : '' }}>Cake</option>
-                <option value="Pastry" {{ old('category', $product->category) === 'Pastry' ? 'selected' : '' }}>Pastry</option>
-                <option value="Coffee" {{ old('category', $product->category) === 'Coffee' ? 'selected' : '' }}>Coffee</option>
+            <select name="category" required>
+                @foreach($categories as $cat)
+                    <option value="{{ $cat }}" {{ old('category', $product->category) === $cat ? 'selected' : '' }}>{{ $cat }}</option>
+                @endforeach
             </select>
         </div>
         <div>
@@ -57,15 +56,6 @@ td{padding:10px 12px;border-bottom:1px solid #f9fafb;}
             <select name="status">
                 <option value="active" {{ old('status', $product->status) === 'active' ? 'selected' : '' }}>Active</option>
                 <option value="inactive" {{ old('status', $product->status) === 'inactive' ? 'selected' : '' }}>Inactive</option>
-            </select>
-        </div>
-        <div>
-            <label>Site</label>
-            <select name="site_id">
-                <option value="">- Unassigned -</option>
-                @foreach($sites as $site)
-                    <option value="{{ $site->id }}" {{ old('site_id', $product->site_id) == $site->id ? 'selected' : '' }}>{{ $site->site_name }}</option>
-                @endforeach
             </select>
         </div>
         <div style="grid-column:1/-1;">
@@ -97,7 +87,7 @@ td{padding:10px 12px;border-bottom:1px solid #f9fafb;}
             <thead><tr><th>Material</th><th>Quantity Used (per unit)</th><th>Unit</th></tr></thead>
             <tbody>
                 @foreach ($product->materials as $material)
-                    <tr><td>{{ $material->item_name }}</td><td>{{ number_format($material->pivot->quantity_used, 2) }}</td><td>{{ $material->unit }}</td></tr>
+                    <tr><td>{{ $material->item_name }}</td><td>{{ number_format($material->pivot->quantity_needed, 2) }}</td><td>{{ $material->unit }}</td></tr>
                 @endforeach
             </tbody>
         </table>

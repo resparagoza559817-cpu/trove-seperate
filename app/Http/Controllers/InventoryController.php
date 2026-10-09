@@ -34,10 +34,9 @@ class InventoryController extends Controller
 
     public function create()
     {
-        $sites = Site::orderBy('site_name')->get();
         $categories = ['Baking Essentials', 'Dairy & Eggs', 'Flavoring & Fillings', 'Packaging', 'Coffee & Beverage', 'Other'];
         $units = ['g', 'kg', 'ml', 'liters', 'pcs', 'dozen', 'pack'];
-        return view('inventory.create', compact('sites', 'categories', 'units'));
+        return view('inventory.create', compact('categories', 'units'));
     }
 
     public function store(Request $request)
@@ -49,7 +48,6 @@ class InventoryController extends Controller
             'quantity_on_hand' => 'required|numeric|min:0',
             'quantity_damaged' => 'nullable|numeric|min:0',
             'minimum_stock'    => 'required|numeric|min:0',
-            'site_id'          => 'nullable|exists:sites,id',
             'notes'            => 'nullable|string',
         ]);
 
@@ -60,7 +58,7 @@ class InventoryController extends Controller
             'quantity_on_hand' => $validated['quantity_on_hand'],
             'quantity_damaged' => $validated['quantity_damaged'] ?? 0,
             'minimum_stock'    => $validated['minimum_stock'],
-            'site_id'          => $validated['site_id'] ?? null,
+            'site_id'          => Site::matina()?->id, // everything starts at Matina; branch transfers move it
             'notes'            => $validated['notes'] ?? null,
         ]);
 
@@ -112,10 +110,9 @@ class InventoryController extends Controller
 
     public function edit(Inventory $inventory)
     {
-        $sites = Site::orderBy('site_name')->get();
         $categories = ['Baking Essentials', 'Dairy & Eggs', 'Flavoring & Fillings', 'Packaging', 'Coffee & Beverage', 'Other'];
         $units = ['g', 'kg', 'ml', 'liters', 'pcs', 'dozen', 'pack'];
-        return view('inventory.edit', compact('inventory', 'sites', 'categories', 'units'));
+        return view('inventory.edit', compact('inventory', 'categories', 'units'));
     }
 
     public function update(Request $request, Inventory $inventory)
@@ -125,7 +122,6 @@ class InventoryController extends Controller
             'category'      => 'required|string|max:255',
             'unit'          => 'required|string|max:50',
             'minimum_stock' => 'required|numeric|min:0',
-            'site_id'       => 'nullable|exists:sites,id',
         ]);
 
         $inventory->update($validated);

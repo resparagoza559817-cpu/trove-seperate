@@ -111,7 +111,7 @@
                                     {{ in_array($log->type, ['used','damaged']) ? 'text-red-600' : 'text-green-700' }}">
                                     {{ in_array($log->type, ['used','damaged']) ? '-' : '+' }}{{ $log->quantity }} {{ $inventory->unit }}
                                 </td>
-                                <td class="px-5 py-3 font-mono text-slate-500 text-xs">{{ $log->reference ?? '—' }}</td>
+                                <td class="px-5 py-3 font-mono text-slate-500 text-xs">{{ $log->ref_note ?? '—' }}</td>
                                 <td class="px-5 py-3 text-slate-500">{{ $log->notes ?? '—' }}</td>
                                 <td class="px-5 py-3 text-slate-500">{{ $log->user?->name ?? '—' }}</td>
                             </tr>

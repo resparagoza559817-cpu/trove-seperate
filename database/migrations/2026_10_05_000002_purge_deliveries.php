@@ -7,7 +7,8 @@ use Illuminate\Support\Facades\DB;
 
 return new class extends Migration {
     public function up(): void {
-        if (Schema::hasTable('inventory_logs') && Schema::hasColumn('inventory_logs', 'delivery_id')) {
+        // The FK drop below is MySQL-specific; skipped on SQLite (used by the test suite).
+        if (DB::getDriverName() === 'mysql' && Schema::hasTable('inventory_logs') && Schema::hasColumn('inventory_logs', 'delivery_id')) {
             // Drop foreign key using exact constraint name first
             DB::statement('ALTER TABLE `inventory_logs` DROP FOREIGN KEY `inventory_logs_ibfk_2`;');
 

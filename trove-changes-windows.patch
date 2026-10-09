@@ -1,0 +1,894 @@
+diff --git a/app/Http/Controllers/BranchTransferController.php b/app/Http/Controllers/BranchTransferController.php
+index d30c15c..70fcc65 100644
+--- a/app/Http/Controllers/BranchTransferController.php
++++ b/app/Http/Controllers/BranchTransferController.php
+@@ -32,7 +32,7 @@ public function store(Request $request)
+     {
+         $validated = $request->validate([
+             'source_site_id'      => 'nullable|exists:sites,id',
+-            'destination_site_id' => 'nullable|exists:sites,id',
++            'destination_site_id' => 'required|exists:sites,id|different:source_site_id',
+             'batch_date'          => 'required|date',
+             'items'               => 'required|array|min:1',
+             'items.*.product_id'  => 'required|exists:products,id',
+diff --git a/app/Http/Controllers/DashboardController.php b/app/Http/Controllers/DashboardController.php
+index 93cd3e8..be6142f 100644
+--- a/app/Http/Controllers/DashboardController.php
++++ b/app/Http/Controllers/DashboardController.php
+@@ -53,7 +53,7 @@ public function index()
+             }
+             $caps = [];
+             foreach ($product->materials as $mat) {
+-                $need = (float) $mat->pivot->quantity_used;
++                $need = (float) $mat->pivot->quantity_needed;
+                 if ($need > 0) {
+                     $caps[] = (int) floor($mat->quantity_on_hand / $need);
+                 }
+diff --git a/app/Http/Controllers/InventoryController.php b/app/Http/Controllers/InventoryController.php
+index 484ce2a..d6b6698 100644
+--- a/app/Http/Controllers/InventoryController.php
++++ b/app/Http/Controllers/InventoryController.php
+@@ -34,10 +34,9 @@ public function index(Request $request)
+ 
+     public function create()
+     {
+-        $sites = Site::orderBy('site_name')->get();
+         $categories = ['Baking Essentials', 'Dairy & Eggs', 'Flavoring & Fillings', 'Packaging', 'Coffee & Beverage', 'Other'];
+         $units = ['g', 'kg', 'ml', 'liters', 'pcs', 'dozen', 'pack'];
+-        return view('inventory.create', compact('sites', 'categories', 'units'));
++        return view('inventory.create', compact('categories', 'units'));
+     }
+ 
+     public function store(Request $request)
+@@ -49,7 +48,6 @@ public function store(Request $request)
+             'quantity_on_hand' => 'required|numeric|min:0',
+             'quantity_damaged' => 'nullable|numeric|min:0',
+             'minimum_stock'    => 'required|numeric|min:0',
+-            'site_id'          => 'nullable|exists:sites,id',
+             'notes'            => 'nullable|string',
+         ]);
+ 
+@@ -60,7 +58,7 @@ public function store(Request $request)
+             'quantity_on_hand' => $validated['quantity_on_hand'],
+             'quantity_damaged' => $validated['quantity_damaged'] ?? 0,
+             'minimum_stock'    => $validated['minimum_stock'],
+-            'site_id'          => $validated['site_id'] ?? null,
++            'site_id'          => Site::matina()?->id, // everything starts at Matina; branch transfers move it
+             'notes'            => $validated['notes'] ?? null,
+         ]);
+ 
+@@ -112,10 +110,9 @@ public function adjust(Request $request, Inventory $inventory)
+ 
+     public function edit(Inventory $inventory)
+     {
+-        $sites = Site::orderBy('site_name')->get();
+         $categories = ['Baking Essentials', 'Dairy & Eggs', 'Flavoring & Fillings', 'Packaging', 'Coffee & Beverage', 'Other'];
+         $units = ['g', 'kg', 'ml', 'liters', 'pcs', 'dozen', 'pack'];
+-        return view('inventory.edit', compact('inventory', 'sites', 'categories', 'units'));
++        return view('inventory.edit', compact('inventory', 'categories', 'units'));
+     }
+ 
+     public function update(Request $request, Inventory $inventory)
+@@ -125,7 +122,6 @@ public function update(Request $request, Inventory $inventory)
+             'category'      => 'required|string|max:255',
+             'unit'          => 'required|string|max:50',
+             'minimum_stock' => 'required|numeric|min:0',
+-            'site_id'       => 'nullable|exists:sites,id',
+         ]);
+ 
+         $inventory->update($validated);
+diff --git a/app/Http/Controllers/ProductController.php b/app/Http/Controllers/ProductController.php
+index b133513..3e7b295 100644
+--- a/app/Http/Controllers/ProductController.php
++++ b/app/Http/Controllers/ProductController.php
+@@ -18,87 +18,115 @@ public function index()
+         return view('products.index', compact('products'));
+     }
+ 
++    public const DEFAULT_CATEGORIES = ['Cake', 'Pastry', 'Coffee'];
++
++    /** Defaults plus any category already used by a product. */
++    private function categoryOptions(): array
++    {
++        $used = Product::whereNotNull('category')->where('category', '!=', '')
++            ->distinct()->pluck('category')->all();
++
++        return collect(self::DEFAULT_CATEGORIES)->merge($used)->unique()->values()->all();
++    }
++
+     public function create()
+     {
+-        $inventoryItems = Inventory::orderBy('item_name')->get();
+-        $sites = Site::all();
+-        return view('products.create', compact('inventoryItems', 'sites'));
++        $inventoryItems = Inventory::whereNull('archived_at')->orderBy('item_name')->get();
++        $categories = $this->categoryOptions();
++        return view('products.create', compact('inventoryItems', 'categories'));
+     }
+ 
+     public function store(Request $request)
+     {
+-        try {
+-            $validated = $request->validate([
+-                'product_name'  => 'required|string|max:255|unique:products',
+-                'description'   => 'nullable|string|max:1000',
+-                'category'      => 'nullable|string|max:255',
+-                'price'         => 'required|numeric|min:0',
+-                'stock_quantity' => 'nullable|numeric|min:0',
+-                'site_id'       => 'nullable|exists:sites,id',
+-                'image'         => 'nullable|image|max:2048',
+-                'recipe'        => 'nullable|array',
+-                'recipe.*.inventory_id' => 'numeric|exists:inventory,id',
+-                'recipe.*.quantity_needed' => 'numeric|min:0.01',
+-            ]);
++        // A "new category" typed by the user replaces the dropdown value.
++        if ($request->input('category') === '__new__') {
++            $request->merge(['category' => trim((string) $request->input('new_category'))]);
++        }
+ 
++        $validated = $request->validate([
++            'product_name'     => 'required|string|max:255|unique:products',
++            'description'      => 'nullable|string|max:1000',
++            'category'         => 'required|string|max:50',
++            'price'            => 'required|numeric|min:0',
++            'stock_quantity'   => 'nullable|integer|min:0',
++            'image'            => 'nullable|image|max:2048',
++            // Every product MUST have a recipe (at least one ingredient).
++            'recipe'                   => 'required|array|min:1',
++            'recipe.*.inventory_id'    => 'required|distinct|exists:inventory,id',
++            'recipe.*.quantity_needed' => 'required|numeric|min:0.01',
++        ], [
++            'recipe.required'                   => 'Add at least one ingredient - every product needs a recipe.',
++            'recipe.min'                        => 'Add at least one ingredient - every product needs a recipe.',
++            'recipe.*.inventory_id.required'    => 'Pick an inventory item for every ingredient row.',
++            'recipe.*.inventory_id.distinct'    => 'The same ingredient is listed more than once.',
++            'recipe.*.quantity_needed.required' => 'Enter the quantity needed for every ingredient row.',
++        ]);
++
++        $startingStock = (int) ($validated['stock_quantity'] ?? 0);
++
++        try {
+             DB::beginTransaction();
+ 
+-            $imagePath = null;
+-            if ($request->hasFile('image')) {
+-                $imagePath = $request->file('image')->store('products', 'public');
++            // Lock the ingredient rows so two requests can't spend the same flour.
++            $inventory = Inventory::whereIn('id', collect($validated['recipe'])->pluck('inventory_id'))
++                ->lockForUpdate()->get()->keyBy('id');
++
++            // Max units the current raw materials can make.
++            $maxMakeable = Product::maxProducibleFrom(collect($validated['recipe'])->map(fn ($r) => [
++                'available' => $inventory[$r['inventory_id']]->quantity_on_hand,
++                'needed'    => $r['quantity_needed'],
++            ])->all());
++
++            if ($startingStock > $maxMakeable) {
++                throw new \Exception("Starting stock of {$startingStock} is more than your raw materials can make. You can make at most {$maxMakeable}.");
+             }
+ 
++            $imagePath = $request->hasFile('image')
++                ? $request->file('image')->store('products', 'public')
++                : null;
++
++            // Every product starts at the Matina commissary; branch transfers move it later.
+             $product = Product::create([
+                 'product_name'   => $validated['product_name'],
+                 'description'    => $validated['description'] ?? null,
+-                'category'       => $validated['category'] ?? null,
++                'category'       => $validated['category'],
+                 'price'          => $validated['price'],
+-                'stock_quantity' => $validated['stock_quantity'] ?? 0,
+-                'site_id'        => $validated['site_id'] ?? null,
++                'stock_quantity' => $startingStock,
++                'site_id'        => Site::matina()?->id,
+                 'status'         => 'active',
+                 'image_path'     => $imagePath,
+             ]);
+ 
+-            if (! empty($validated['recipe'])) {
+-                $materials = [];
+-                foreach ($validated['recipe'] as $recipe_item) {
+-                    if (empty($recipe_item['inventory_id'])) continue;
+-
+-                    $inventory_id    = $recipe_item['inventory_id'];
+-                    $quantity_needed = $recipe_item['quantity_needed'];
+-                    $inventory = Inventory::findOrFail($inventory_id);
++            $materials = [];
++            foreach ($validated['recipe'] as $row) {
++                $materials[$row['inventory_id']] = ['quantity_needed' => $row['quantity_needed']];
++            }
++            $product->materials()->attach($materials);
+ 
+-                    if ($inventory->quantity_on_hand < $quantity_needed) {
+-                        throw new \Exception(
+-                            "Insufficient {$inventory->item_name}. Available: {$inventory->quantity_on_hand}, Needed: {$quantity_needed}"
+-                        );
+-                    }
++            // Starting finished stock = units already baked, so use up their ingredients.
++            if ($startingStock > 0) {
++                foreach ($validated['recipe'] as $row) {
++                    $item = $inventory[$row['inventory_id']];
++                    $used = round($row['quantity_needed'] * $startingStock, 2);
+ 
+-                    $inventory->update([
+-                        'quantity_on_hand' => $inventory->quantity_on_hand - $quantity_needed
+-                    ]);
++                    $item->decrement('quantity_on_hand', $used);
+ 
+                     InventoryLog::create([
+-                        'inventory_id' => $inventory_id,
++                        'inventory_id' => $item->id,
+                         'type'         => 'used',
+-                        'quantity'     => $quantity_needed,
+-                        'reference'    => 'PRODUCT-CREATE',
+-                        'notes'        => "Material used for product: {$product->product_name}",
++                        'quantity'     => $used,
++                        'ref_note'     => 'PRODUCT-CREATE',
++                        'notes'        => "Used for {$startingStock} x {$product->product_name} (starting stock)",
+                         'user_id'      => auth()->id(),
+                     ]);
+-
+-                    $materials[$inventory_id] = ['quantity_used' => $quantity_needed];
+-                }
+-
+-                if (! empty($materials)) {
+-                    $product->materials()->attach($materials);
+                 }
+             }
+ 
+             DB::commit();
+ 
+             return redirect()->route('products.index')
+-                ->with('success', "Product '{$product->product_name}' created successfully! Materials have been deducted from inventory.");
++                ->with('success', "Product '{$product->product_name}' created."
++                    . ($startingStock > 0 ? ' Raw materials for the starting stock were deducted from inventory.' : ''));
+         } catch (\Exception $e) {
+             DB::rollBack();
+             \Log::error('Product creation failed: ' . $e->getMessage());
+@@ -115,10 +143,9 @@ public function show(Product $product)
+ 
+     public function edit(Product $product)
+     {
+-        $inventoryItems = Inventory::orderBy('item_name')->get();
+-        $sites = Site::all();
+         $product->load('materials');
+-        return view('products.edit', compact('product', 'inventoryItems', 'sites'));
++        $categories = $this->categoryOptions();
++        return view('products.edit', compact('product', 'categories'));
+     }
+ 
+     public function update(Request $request, Product $product)
+@@ -127,9 +154,8 @@ public function update(Request $request, Product $product)
+             $validated = $request->validate([
+                 'product_name'  => 'required|string|max:255|unique:products,product_name,' . $product->id,
+                 'description'   => 'nullable|string|max:1000',
+-                'category'      => 'nullable|string|max:255',
++                'category'      => 'required|string|max:50',
+                 'price'         => 'required|numeric|min:0',
+-                'site_id'       => 'nullable|exists:sites,id',
+                 'status'        => 'nullable|in:active,inactive',
+                 'image'         => 'nullable|image|max:2048',
+             ]);
+diff --git a/app/Models/InventoryLog.php b/app/Models/InventoryLog.php
+index e355564..169fd12 100644
+--- a/app/Models/InventoryLog.php
++++ b/app/Models/InventoryLog.php
+@@ -14,10 +14,10 @@ class InventoryLog extends Model
+     // ← FIX: was wrong before — had Inventory fields instead of InventoryLog fields
+     protected $fillable = [
+         'inventory_id',
+-        'delivery_id',
++        'order_id',
+         'type',        // received | used | damaged | adjustment
+         'quantity',
+-        'reference',
++        'ref_note',
+         'notes',
+         'user_id',
+     ];
+@@ -30,6 +30,5 @@ class InventoryLog extends Model
+     ];
+ 
+     public function inventory() { return $this->belongsTo(Inventory::class); }
+-    public function delivery()  { return $this->belongsTo(Delivery::class); }
+     public function user()      { return $this->belongsTo(User::class); }
+ }
+\ No newline at end of file
+diff --git a/app/Models/Product.php b/app/Models/Product.php
+index 8765159..6098e65 100644
+--- a/app/Models/Product.php
++++ b/app/Models/Product.php
+@@ -28,14 +28,47 @@ public function site()
+         return $this->belongsTo(Site::class);
+     }
+ 
+-    // Materials (inventory items) used in this product - the recipe
++    // Materials (inventory items) used in this product - the recipe.
++    // Live database table: product_raw_materials (quantity_needed = amount per 1 unit).
+     public function materials()
+     {
+-       return $this->belongsToMany(Inventory::class, 'product_raw_materials')
+-            ->withPivot('quantity_needed') // Uses quantity_needed from product_raw_materials
++        return $this->belongsToMany(Inventory::class, 'product_raw_materials', 'product_id', 'inventory_id')
++            ->withPivot('quantity_needed')
+             ->withTimestamps();
+     }
+ 
++    /**
++     * How many units of this product can be made from the raw materials
++     * currently in inventory (limited by the scarcest ingredient).
++     * Returns null when there is no recipe.
++     */
++    public function maxProducible(): ?int
++    {
++        $recipe = $this->materials->map(fn ($m) => [
++            'available' => (float) $m->quantity_on_hand, // damaged items are already removed from on-hand
++            'needed'    => (float) $m->pivot->quantity_needed,
++        ])->all();
++
++        return static::maxProducibleFrom($recipe);
++    }
++
++    /**
++     * @param  array<int,array{available:float|int|string,needed:float|int|string}>  $recipe
++     */
++    public static function maxProducibleFrom(array $recipe): ?int
++    {
++        $caps = [];
++        foreach ($recipe as $row) {
++            $needed = (float) $row['needed'];
++            if ($needed <= 0) {
++                continue;
++            }
++            $caps[] = (int) floor(round(max(0, (float) $row['available']) / $needed, 6));
++        }
++
++        return $caps ? min($caps) : null;
++    }
++
+     public function orderItems()
+     {
+         return $this->hasMany(OrderItem::class);
+diff --git a/app/Models/Site.php b/app/Models/Site.php
+index 812c862..bfaf649 100644
+--- a/app/Models/Site.php
++++ b/app/Models/Site.php
+@@ -8,6 +8,12 @@ class Site extends Model
+ {
+     protected $fillable = ['site_name', 'street', 'city'];
+ 
++    /** The Matina commissary: every product and inventory item starts here. */
++    public static function matina(): ?self
++    {
++        return static::where('site_name', 'like', '%matina%')->first();
++    }
++
+     public function users()
+     {
+         return $this->hasMany(User::class);
+diff --git a/database/migrations/2026_10_05_000002_purge_deliveries.php b/database/migrations/2026_10_05_000002_purge_deliveries.php
+index d5e9e79..ee8d9de 100644
+--- a/database/migrations/2026_10_05_000002_purge_deliveries.php
++++ b/database/migrations/2026_10_05_000002_purge_deliveries.php
+@@ -7,7 +7,8 @@
+ 
+ return new class extends Migration {
+     public function up(): void {
+-        if (Schema::hasTable('inventory_logs') && Schema::hasColumn('inventory_logs', 'delivery_id')) {
++        // The FK drop below is MySQL-specific; skipped on SQLite (used by the test suite).
++        if (DB::getDriverName() === 'mysql' && Schema::hasTable('inventory_logs') && Schema::hasColumn('inventory_logs', 'delivery_id')) {
+             // Drop foreign key using exact constraint name first
+             DB::statement('ALTER TABLE `inventory_logs` DROP FOREIGN KEY `inventory_logs_ibfk_2`;');
+ 
+diff --git a/database/migrations/2026_10_09_000001_sync_recipe_and_log_schema.php b/database/migrations/2026_10_09_000001_sync_recipe_and_log_schema.php
+new file mode 100644
+index 0000000..80fb2ae
+--- /dev/null
++++ b/database/migrations/2026_10_09_000001_sync_recipe_and_log_schema.php
+@@ -0,0 +1,46 @@
++<?php
++
++use Illuminate\Database\Migrations\Migration;
++use Illuminate\Database\Schema\Blueprint;
++use Illuminate\Support\Facades\Schema;
++
++/**
++ * Brings fresh installs in line with the live Trove database, which was
++ * adjusted by hand:  recipe table = product_raw_materials (quantity_needed),
++ * inventory_logs note column = ref_note.  Every step is guarded, so on a
++ * database that already matches (the live one) this migration changes nothing.
++ */
++return new class extends Migration {
++    public function up(): void
++    {
++        if (Schema::hasTable('product_materials') && ! Schema::hasTable('product_raw_materials')) {
++            Schema::rename('product_materials', 'product_raw_materials');
++        }
++        if (Schema::hasTable('product_raw_materials')
++            && Schema::hasColumn('product_raw_materials', 'quantity_used')
++            && ! Schema::hasColumn('product_raw_materials', 'quantity_needed')) {
++            Schema::table('product_raw_materials', function (Blueprint $t) {
++                $t->renameColumn('quantity_used', 'quantity_needed');
++            });
++        }
++
++        if (Schema::hasTable('inventory_logs')
++            && Schema::hasColumn('inventory_logs', 'reference')
++            && ! Schema::hasColumn('inventory_logs', 'ref_note')) {
++            Schema::table('inventory_logs', function (Blueprint $t) {
++                $t->renameColumn('reference', 'ref_note');
++            });
++        }
++
++        if (Schema::hasTable('products') && ! Schema::hasColumn('products', 'description')) {
++            Schema::table('products', function (Blueprint $t) {
++                $t->text('description')->nullable()->after('product_name');
++            });
++        }
++    }
++
++    public function down(): void
++    {
++        // Intentionally empty: this only aligns schemas and is not reversible.
++    }
++};
+diff --git a/database/seeders/DatabaseSeeder.php b/database/seeders/DatabaseSeeder.php
+index 8b90e56..610b6b7 100644
+--- a/database/seeders/DatabaseSeeder.php
++++ b/database/seeders/DatabaseSeeder.php
+@@ -179,7 +179,7 @@ public function run(): void
+                 $attach = [];
+                 foreach ($p['recipe'] as $itemName => $qtyUsed) {
+                     if (isset($inv[$itemName])) {
+-                        $attach[$inv[$itemName]->id] = ['quantity_used' => $qtyUsed];
++                        $attach[$inv[$itemName]->id] = ['quantity_needed' => $qtyUsed];
+                     }
+                 }
+                 $product->materials()->attach($attach);
+diff --git a/resources/views/Products/create.blade.php b/resources/views/Products/create.blade.php
+index cbb0e29..3e18b3d 100644
+--- a/resources/views/Products/create.blade.php
++++ b/resources/views/Products/create.blade.php
+@@ -21,7 +21,7 @@
+ 
+ @php
+     $invData = $inventoryItems->map(function ($i) {
+-        return ['id' => $i->id, 'name' => $i->item_name, 'unit' => $i->unit];
++        return ['id' => $i->id, 'name' => $i->item_name, 'unit' => $i->unit, 'onHand' => (float) $i->quantity_on_hand];
+     });
+ @endphp
+ 
+@@ -30,6 +30,10 @@
+ <strong>Please fix:</strong><ul style="margin:6px 0 0 18px;">@foreach($errors->all() as $e)<li>{{ $e }}</li>@endforeach</ul></div>
+ @endif
+ 
++@if(session('error'))
++<div style="background:#FBE4DA;border:1px solid #fecaca;color:#991b1b;padding:12px 16px;border-radius:9px;margin-bottom:16px;font-size:13px;">{{ session('error') }}</div>
++@endif
++
+ <form method="POST" action="{{ route('products.store') }}" enctype="multipart/form-data">
+ @csrf
+ 
+@@ -46,29 +50,24 @@
+         </div>
+         <div>
+             <label>Category <span style="color:red">*</span></label>
+-            <select name="category" required>
++            <select name="category" id="categorySel" onchange="toggleNewCat()" required>
+                 <option value="">- Select -</option>
+-                <option value="Cake">Cake</option>
+-                <option value="Pastry">Pastry</option>
+-                <option value="Coffee">Coffee</option>
++                @foreach($categories as $cat)
++                    <option value="{{ $cat }}" {{ old('category') === $cat ? 'selected' : '' }}>{{ $cat }}</option>
++                @endforeach
++                <option value="__new__" {{ old('category') === '__new__' ? 'selected' : '' }}>+ Add new category...</option>
+             </select>
++            <input type="text" name="new_category" id="newCat" maxlength="50" placeholder="New category name" value="{{ old('new_category') }}" style="display:none;margin-top:8px;">
+         </div>
+         <div>
+             <label>Price (&#8369;) <span style="color:red">*</span></label>
+             <input type="number" name="price" step="0.01" min="0" value="{{ old('price') }}" required>
+         </div>
+-        <div>
++        <div style="grid-column:1/-1;">
+             <label>Starting Finished Stock</label>
+-            <input type="number" name="stock_quantity" min="0" value="{{ old('stock_quantity', 0) }}">
+-        </div>
+-        <div>
+-            <label>Site</label>
+-            <select name="site_id">
+-                <option value="">- Unassigned -</option>
+-                @foreach($sites as $site)
+-                    <option value="{{ $site->id }}">{{ $site->site_name }}</option>
+-                @endforeach
+-            </select>
++            <input type="number" name="stock_quantity" id="stockQty" min="0" step="1" oninput="recalc()" value="{{ old('stock_quantity', 0) }}">
++            <p id="makeable" style="font-size:12px;margin-top:6px;font-weight:600;color:#8A7460;">Add ingredients below to see how many you can make.</p>
++            <p style="font-size:11px;color:#8A7460;margin-top:2px;">Ingredients for the starting stock are deducted from inventory when you save.</p>
+         </div>
+         <div style="grid-column:1/-1;">
+             <label>Product Photo</label>
+@@ -84,9 +83,9 @@
+         <div class="card-title" style="margin:0;padding:0;border:none;">Recipe (Raw Materials Needed)</div>
+         <button type="button" class="add-row-btn" onclick="addRow()">+ Add Ingredient</button>
+     </div>
+-    <p style="font-size:12px;color:#8A7460;margin-bottom:12px;">Optional - define how much of each inventory item is needed to make <strong>one unit</strong> of this product. This enables automatic stock deduction.</p>
++    <p style="font-size:12px;color:#8A7460;margin-bottom:12px;"><strong>Required</strong> - add at least one ingredient and how much of it is needed to make <strong>one unit</strong> of this product (e.g. a cake needs 2 kg flour). The Starting Finished Stock above is limited by what inventory can supply.</p>
+     <table>
+-        <thead><tr><th style="width:50%">Inventory Item</th><th>Qty Needed (per unit)</th><th></th></tr></thead>
++        <thead><tr><th style="width:50%">Inventory Item</th><th>Qty Needed (per unit)</th><th>In Stock</th><th></th></tr></thead>
+         <tbody id="recipeBody"></tbody>
+     </table>
+ </div>
+@@ -99,8 +98,15 @@
+ 
+ <script>
+ const inventoryItems = {!! $invData->toJson() !!};
++const oldRecipe = {!! json_encode(old('recipe', [])) !!};
+ let rowIndex = 0;
+ 
++function toggleNewCat(){
++    const isNew = document.getElementById('categorySel').value === '__new__';
++    const f = document.getElementById('newCat');
++    f.style.display = isNew ? 'block' : 'none';
++    f.required = isNew;
++}
+ function previewImg(input){
+     const img = document.getElementById('preview');
+     if(input.files && input.files[0]){
+@@ -108,18 +114,64 @@ function previewImg(input){
+         img.style.display = 'block';
+     } else { img.style.display='none'; }
+ }
+-function itemOptions(){
+-    return inventoryItems.map(function(i){ return '<option value="'+i.id+'">'+i.name+' ('+i.unit+')</option>'; }).join('');
++function itemOptions(selected){
++    return inventoryItems.map(function(i){
++        return '<option value="'+i.id+'"'+(String(selected)===String(i.id)?' selected':'')+'>'+i.name+' ('+i.unit+')</option>';
++    }).join('');
+ }
+-function addRow(){
++function addRow(item, qty){
+     const i = rowIndex++;
+     const tr = document.createElement('tr');
+     tr.id = 'recipe_row_'+i;
+     tr.innerHTML =
+-        '<td><select name="recipe['+i+'][inventory_id]" required><option value="">- Select item -</option>'+itemOptions()+'</select></td>' +
+-        '<td><input type="number" name="recipe['+i+'][quantity_needed]" step="0.01" min="0.01" required></td>' +
+-        '<td><button type="button" onclick="document.getElementById(\'recipe_row_'+i+'\').remove()" style="background:none;border:none;color:#ef4444;cursor:pointer;">&times;</button></td>';
++        '<td><select name="recipe['+i+'][inventory_id]" required onchange="recalc()"><option value="">- Select item -</option>'+itemOptions(item)+'</select></td>' +
++        '<td><input type="number" name="recipe['+i+'][quantity_needed]" step="0.01" min="0.01" value="'+(qty||'')+'" required oninput="recalc()"></td>' +
++        '<td class="onhand" style="color:#8A7460;white-space:nowrap;">-</td>' +
++        '<td><button type="button" onclick="removeRow('+i+')" style="background:none;border:none;color:#ef4444;cursor:pointer;" title="Remove">&times;</button></td>';
+     document.getElementById('recipeBody').appendChild(tr);
++    recalc();
++}
++function removeRow(i){
++    const rows = document.querySelectorAll('#recipeBody tr');
++    if(rows.length <= 1) return; // keep at least one ingredient row - recipe is required
++    document.getElementById('recipe_row_'+i).remove();
++    recalc();
+ }
++// How many units the raw materials can make = scarcest ingredient (on hand / needed per unit)
++function recalc(){
++    let max = null, limiting = '';
++    document.querySelectorAll('#recipeBody tr').forEach(function(tr){
++        const sel = tr.querySelector('select');
++        const qty = parseFloat(tr.querySelector('input').value);
++        const cell = tr.querySelector('.onhand');
++        const inv = inventoryItems.find(function(x){ return String(x.id) === sel.value; });
++        cell.textContent = inv ? (inv.onHand + ' ' + inv.unit) : '-';
++        if(inv && qty > 0){
++            const cap = Math.floor(Math.round(inv.onHand / qty * 1e6) / 1e6);
++            if(max === null || cap < max){ max = cap; limiting = inv.name; }
++        }
++    });
++    const stock = document.getElementById('stockQty');
++    const msg = document.getElementById('makeable');
++    if(max === null){
++        stock.removeAttribute('max');
++        msg.textContent = 'Add ingredients below to see how many you can make.';
++        msg.style.color = '#8A7460';
++        return;
++    }
++    stock.max = max;
++    if(parseInt(stock.value || '0', 10) > max) stock.value = max;
++    const qty = parseInt(stock.value || '0', 10) || 0;
++    msg.textContent = max > 0
++        ? 'You can make up to ' + max + ' (limited by ' + limiting + ').'
++            + (qty > 0 ? ' After ' + qty + ', you can still make ' + (max - qty) + ' more.' : '')
++        : 'Not enough ' + limiting + ' in inventory to make even 1.';
++    msg.style.color = max > 0 ? '#166534' : '#C2410C';
++}
++
++toggleNewCat();
++const keys = Object.keys(oldRecipe);
++if(keys.length){ keys.forEach(function(k){ addRow(oldRecipe[k].inventory_id, oldRecipe[k].quantity_needed); }); }
++else { addRow(); }
+ </script>
+-</x-app-layout>
+\ No newline at end of file
++</x-app-layout>
+diff --git a/resources/views/Products/edit.blade.php b/resources/views/Products/edit.blade.php
+index 94f17f5..463d44d 100644
+--- a/resources/views/Products/edit.blade.php
++++ b/resources/views/Products/edit.blade.php
+@@ -41,11 +41,10 @@
+         </div>
+         <div>
+             <label>Category</label>
+-            <select name="category">
+-                <option value="">- Select -</option>
+-                <option value="Cake" {{ old('category', $product->category) === 'Cake' ? 'selected' : '' }}>Cake</option>
+-                <option value="Pastry" {{ old('category', $product->category) === 'Pastry' ? 'selected' : '' }}>Pastry</option>
+-                <option value="Coffee" {{ old('category', $product->category) === 'Coffee' ? 'selected' : '' }}>Coffee</option>
++            <select name="category" required>
++                @foreach($categories as $cat)
++                    <option value="{{ $cat }}" {{ old('category', $product->category) === $cat ? 'selected' : '' }}>{{ $cat }}</option>
++                @endforeach
+             </select>
+         </div>
+         <div>
+@@ -59,15 +58,6 @@
+                 <option value="inactive" {{ old('status', $product->status) === 'inactive' ? 'selected' : '' }}>Inactive</option>
+             </select>
+         </div>
+-        <div>
+-            <label>Site</label>
+-            <select name="site_id">
+-                <option value="">- Unassigned -</option>
+-                @foreach($sites as $site)
+-                    <option value="{{ $site->id }}" {{ old('site_id', $product->site_id) == $site->id ? 'selected' : '' }}>{{ $site->site_name }}</option>
+-                @endforeach
+-            </select>
+-        </div>
+         <div style="grid-column:1/-1;">
+             <label>Product Photo</label>
+             <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">
+@@ -97,7 +87,7 @@
+             <thead><tr><th>Material</th><th>Quantity Used (per unit)</th><th>Unit</th></tr></thead>
+             <tbody>
+                 @foreach ($product->materials as $material)
+-                    <tr><td>{{ $material->item_name }}</td><td>{{ number_format($material->pivot->quantity_used, 2) }}</td><td>{{ $material->unit }}</td></tr>
++                    <tr><td>{{ $material->item_name }}</td><td>{{ number_format($material->pivot->quantity_needed, 2) }}</td><td>{{ $material->unit }}</td></tr>
+                 @endforeach
+             </tbody>
+         </table>
+diff --git a/resources/views/Products/show.blade.php b/resources/views/Products/show.blade.php
+index eb44bca..b031a68 100644
+--- a/resources/views/Products/show.blade.php
++++ b/resources/views/Products/show.blade.php
+@@ -49,7 +49,7 @@
+                 <thead><tr><th>Material</th><th style="text-align:right;">Quantity Used</th><th style="text-align:center;">Unit</th></tr></thead>
+                 <tbody>
+                     @foreach ($product->materials as $material)
+-                        <tr><td style="font-weight:500;">{{ $material->item_name }}</td><td style="text-align:right;">{{ number_format($material->pivot->quantity_used, 2) }}</td><td style="text-align:center;">{{ $material->unit }}</td></tr>
++                        <tr><td style="font-weight:500;">{{ $material->item_name }}</td><td style="text-align:right;">{{ number_format($material->pivot->quantity_needed, 2) }}</td><td style="text-align:center;">{{ $material->unit }}</td></tr>
+                     @endforeach
+                 </tbody>
+             </table>
+diff --git a/resources/views/branch-transfers/create.blade.php b/resources/views/branch-transfers/create.blade.php
+index 87ed1f0..5100d08 100644
+--- a/resources/views/branch-transfers/create.blade.php
++++ b/resources/views/branch-transfers/create.blade.php
+@@ -47,15 +47,18 @@
+     <div class="card-title">Batch Details</div>
+     <div class="grid">
+         <div>
+-            <label>From (Source) *</label>
+-            <select name="source_site_id">
+-                @foreach($sites as $s)<option value="{{ $s->id }}" {{ stripos($s->site_name,'matina')!==false?'selected':'' }}>{{ $s->site_name }}</option>@endforeach
+-            </select>
++            <label>From (Source)</label>
++            @php $matina = $sites->first(fn ($s) => stripos($s->site_name, 'matina') !== false); @endphp
++            <input type="text" value="{{ $matina->site_name ?? 'Matina' }}" readonly style="background:#f3f4f6;color:#6b7280;">
++            <input type="hidden" name="source_site_id" value="{{ $matina->id ?? '' }}">
+         </div>
+         <div>
+             <label>To (Destination) *</label>
+-            <select name="destination_site_id">
+-                @foreach($sites as $s)<option value="{{ $s->id }}" {{ stripos($s->site_name,'jacinto')!==false?'selected':'' }}>{{ $s->site_name }}</option>@endforeach
++            <select name="destination_site_id" required>
++                <option value="">- Select destination -</option>
++                @foreach($sites->where('id', '!=', $matina->id ?? null) as $s)
++                    <option value="{{ $s->id }}" {{ old('destination_site_id') == $s->id ? 'selected' : '' }}>{{ $s->site_name }}</option>
++                @endforeach
+             </select>
+         </div>
+         <div>
+diff --git a/resources/views/inventory/create.blade.php b/resources/views/inventory/create.blade.php
+index 4540323..1d94157 100644
+--- a/resources/views/inventory/create.blade.php
++++ b/resources/views/inventory/create.blade.php
+@@ -46,15 +46,6 @@
+         <label>Minimum Stock (low-stock alert) <span style="color:red">*</span></label>
+         <input type="number" name="minimum_stock" step="0.01" min="0" value="0" required>
+     </div>
+-    <div style="grid-column:1/-1;">
+-        <label>Site</label>
+-        <select name="site_id">
+-            <option value="">— Unassigned —</option>
+-            @foreach($sites as $site)
+-                <option value="{{ $site->id }}">{{ $site->site_name }}</option>
+-            @endforeach
+-        </select>
+-    </div>
+     <div style="grid-column:1/-1;">
+         <label>Notes</label>
+         <textarea name="notes" rows="2"></textarea>
+diff --git a/resources/views/inventory/edit.blade.php b/resources/views/inventory/edit.blade.php
+index a4fbff5..44c055b 100644
+--- a/resources/views/inventory/edit.blade.php
++++ b/resources/views/inventory/edit.blade.php
+@@ -41,15 +41,6 @@
+         <label>Minimum Stock</label>
+         <input type="number" name="minimum_stock" step="0.01" min="0" value="{{ $inventory->minimum_stock }}" required>
+     </div>
+-    <div>
+-        <label>Site</label>
+-        <select name="site_id">
+-            <option value="">— Unassigned —</option>
+-            @foreach($sites as $site)
+-                <option value="{{ $site->id }}" {{ $inventory->site_id == $site->id ? 'selected' : '' }}>{{ $site->site_name }}</option>
+-            @endforeach
+-        </select>
+-    </div>
+ </div>
+ <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:20px;">
+     <a href="{{ route('inventory.index') }}" class="btn btn-outline">Cancel</a>
+diff --git a/resources/views/inventory/show.blade.php b/resources/views/inventory/show.blade.php
+index 74e1e5a..6c705c5 100644
+--- a/resources/views/inventory/show.blade.php
++++ b/resources/views/inventory/show.blade.php
+@@ -111,7 +111,7 @@ class="px-5 py-2 bg-[#0f2d52] text-white font-bold rounded-lg hover:opacity-90 t
+                                     {{ in_array($log->type, ['used','damaged']) ? 'text-red-600' : 'text-green-700' }}">
+                                     {{ in_array($log->type, ['used','damaged']) ? '-' : '+' }}{{ $log->quantity }} {{ $inventory->unit }}
+                                 </td>
+-                                <td class="px-5 py-3 font-mono text-slate-500 text-xs">{{ $log->reference ?? '—' }}</td>
++                                <td class="px-5 py-3 font-mono text-slate-500 text-xs">{{ $log->ref_note ?? '—' }}</td>
+                                 <td class="px-5 py-3 text-slate-500">{{ $log->notes ?? '—' }}</td>
+                                 <td class="px-5 py-3 text-slate-500">{{ $log->user?->name ?? '—' }}</td>
+                             </tr>
+diff --git a/tests/Feature/ProductRecipeTest.php b/tests/Feature/ProductRecipeTest.php
+new file mode 100644
+index 0000000..d3b049b
+--- /dev/null
++++ b/tests/Feature/ProductRecipeTest.php
+@@ -0,0 +1,135 @@
++<?php
++
++use App\Models\Inventory;
++use App\Models\InventoryLog;
++use App\Models\Product;
++use App\Models\Site;
++use App\Models\User;
++
++beforeEach(function () {
++    $this->withoutVite();
++    // SQLite can't drop the legacy deliveries FK that the MySQL migration removes, so stub the table.
++    \Illuminate\Support\Facades\Schema::create('deliveries', fn ($t) => $t->id());
++    $this->matina  = Site::create(['site_name' => 'Matina Commissary']);
++    $this->jacinto = Site::create(['site_name' => 'Jacinto Branch']);
++    $this->owner = User::create([
++        'first_name' => 'T', 'last_name' => 'O', 'email' => 'o@t.com',
++        'password' => bcrypt('x'), 'role' => 'Owner', 'site_id' => $this->matina->id,
++    ]);
++    $this->flour = Inventory::create([
++        'item_name' => 'Flour', 'category' => 'Baking Essentials', 'unit' => 'kg',
++        'quantity_on_hand' => 20, 'minimum_stock' => 1,
++    ]);
++    $this->box = Inventory::create([
++        'item_name' => 'Box', 'category' => 'Packaging', 'unit' => 'pcs',
++        'quantity_on_hand' => 7, 'minimum_stock' => 1,
++    ]);
++});
++
++function payload(array $over = []): array
++{
++    return array_merge([
++        'product_name' => 'Test Cake', 'category' => 'Cake', 'price' => 100,
++        'stock_quantity' => 0,
++        'recipe' => [['inventory_id' => test()->flour->id, 'quantity_needed' => 2]],
++    ], $over);
++}
++
++it('maxProducibleFrom uses the scarcest ingredient', function () {
++    // 20 kg flour / 2 kg = 10, 7 boxes / 1 = 7  => 7
++    expect(Product::maxProducibleFrom([
++        ['available' => 20, 'needed' => 2],
++        ['available' => 7,  'needed' => 1],
++    ]))->toBe(7);
++    expect(Product::maxProducibleFrom([]))->toBeNull();
++    expect(Product::maxProducibleFrom([['available' => 0.3, 'needed' => 0.1]]))->toBe(3); // float safe
++});
++
++it('rejects a product with no recipe', function () {
++    $this->actingAs($this->owner)
++        ->post('/products', payload(['recipe' => []]))
++        ->assertSessionHasErrors('recipe');
++    expect(Product::count())->toBe(0);
++});
++
++it('rejects duplicate ingredients and missing quantity', function () {
++    $f = $this->flour->id;
++    $this->actingAs($this->owner)->post('/products', payload(['recipe' => [
++        ['inventory_id' => $f, 'quantity_needed' => 1], ['inventory_id' => $f, 'quantity_needed' => 1],
++    ]]))->assertSessionHasErrors('recipe.0.inventory_id');
++    $this->actingAs($this->owner)->post('/products', payload(['recipe' => [['inventory_id' => $f]]]))
++        ->assertSessionHasErrors('recipe.0.quantity_needed');
++});
++
++it('creates at Matina, ignores any posted site, and deducts ingredients for starting stock', function () {
++    $this->actingAs($this->owner)
++        ->post('/products', payload(['stock_quantity' => 4, 'site_id' => $this->jacinto->id]))
++        ->assertSessionHasNoErrors()->assertSessionMissing('error')->assertRedirect('/products');
++
++    $p = Product::first();
++    expect($p->site_id)->toBe($this->matina->id)
++        ->and($p->stock_quantity)->toBe(4)
++        ->and((float) $p->materials->first()->pivot->quantity_needed)->toBe(2.0)
++        ->and($p->maxProducible())->toBe(6);                     // 12 kg left / 2
++    expect((float) $this->flour->fresh()->quantity_on_hand)->toBe(12.0);
++    expect(InventoryLog::where('type', 'used')->first()->quantity)->toEqual(8);
++});
++
++it('blocks starting stock above what the raw materials can make', function () {
++    $this->actingAs($this->owner)
++        ->post('/products', payload(['stock_quantity' => 11])) // max is 10
++        ->assertSessionHas('error');
++    expect(Product::count())->toBe(0);
++    expect((float) $this->flour->fresh()->quantity_on_hand)->toBe(20.0);
++});
++
++it('accepts a brand new category', function () {
++    $this->actingAs($this->owner)
++        ->post('/products', payload(['category' => '__new__', 'new_category' => 'Bread']));
++    expect(Product::first()->category)->toBe('Bread');
++});
++
++it('renders the create form without a site field and with a recipe row', function () {
++    $this->actingAs($this->owner)->get('/products/create')
++        ->assertOk()->assertDontSee('name="site_id"', false)
++        ->assertSee('Starting Finished Stock')->assertSee('+ Add new category...', false);
++    $this->actingAs($this->owner)->get('/inventory/create')->assertOk()->assertDontSee('name="site_id"', false);
++});
++
++it('stores inventory at Matina', function () {
++    $this->actingAs($this->owner)->post('/inventory', [
++        'item_name' => 'Sugar', 'category' => 'Other', 'unit' => 'kg',
++        'quantity_on_hand' => 5, 'minimum_stock' => 1,
++    ])->assertRedirect('/inventory');
++    expect(Inventory::where('item_name', 'Sugar')->first()->site_id)->toBe($this->matina->id);
++});
++
++it('branch transfer form fixes Matina as source and lists only other sites as destination', function () {
++    $this->actingAs($this->owner)->get('/branch-transfers/create')->assertOk()
++        ->assertSee('Jacinto Branch')->assertSee('readonly', false);
++});
++
++it('requires a destination and rejects destination = source on transfer', function () {
++    $p = Product::create(['product_name' => 'X', 'price' => 1, 'stock_quantity' => 5, 'status' => 'active']);
++    $row = ['items' => [['product_id' => $p->id, 'qty_sent' => 1, 'unit_price' => 1]], 'batch_date' => '2026-10-09'];
++    $this->actingAs($this->owner)->post('/branch-transfers', $row + ['source_site_id' => $this->matina->id])
++        ->assertSessionHasErrors('destination_site_id');
++    $this->actingAs($this->owner)->post('/branch-transfers', $row + [
++        'source_site_id' => $this->matina->id, 'destination_site_id' => $this->matina->id,
++    ])->assertSessionHasErrors('destination_site_id');
++    $this->actingAs($this->owner)->post('/branch-transfers', $row + [
++        'source_site_id' => $this->matina->id, 'destination_site_id' => $this->jacinto->id,
++    ])->assertRedirect();
++    expect($p->fresh()->stock_quantity)->toBe(4);
++});
++
++it('edit and show pages render and edit has no site field', function () {
++    $this->actingAs($this->owner)->post('/products', payload());
++    $p = Product::first();
++    $this->actingAs($this->owner)->get("/products/{$p->id}/edit")->assertOk()->assertDontSee('name="site_id"', false)->assertSee('Flour');
++    $this->actingAs($this->owner)->get("/products/{$p->id}")->assertOk();
++    $this->actingAs($this->owner)->get('/products')->assertOk();
++    $this->actingAs($this->owner)->get('/dashboard')->assertOk();
++    $this->actingAs($this->owner)->put("/products/{$p->id}", ['product_name' => 'Test Cake', 'category' => 'Cake', 'price' => 120, 'status' => 'active'])
++        ->assertRedirect('/products');
++});

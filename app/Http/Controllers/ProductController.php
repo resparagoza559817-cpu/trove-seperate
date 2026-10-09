@@ -18,87 +18,115 @@ class ProductController extends Controller
         return view('products.index', compact('products'));
     }
 
+    public const DEFAULT_CATEGORIES = ['Cake', 'Pastry', 'Coffee'];
+
+    /** Defaults plus any category already used by a product. */
+    private function categoryOptions(): array
+    {
+        $used = Product::whereNotNull('category')->where('category', '!=', '')
+            ->distinct()->pluck('category')->all();
+
+        return collect(self::DEFAULT_CATEGORIES)->merge($used)->unique()->values()->all();
+    }
+
     public function create()
     {
-        $inventoryItems = Inventory::orderBy('item_name')->get();
-        $sites = Site::all();
-        return view('products.create', compact('inventoryItems', 'sites'));
+        $inventoryItems = Inventory::whereNull('archived_at')->orderBy('item_name')->get();
+        $categories = $this->categoryOptions();
+        return view('products.create', compact('inventoryItems', 'categories'));
     }
 
     public function store(Request $request)
     {
-        try {
-            $validated = $request->validate([
-                'product_name'  => 'required|string|max:255|unique:products',
-                'description'   => 'nullable|string|max:1000',
-                'category'      => 'nullable|string|max:255',
-                'price'         => 'required|numeric|min:0',
-                'stock_quantity' => 'nullable|numeric|min:0',
-                'site_id'       => 'nullable|exists:sites,id',
-                'image'         => 'nullable|image|max:2048',
-                'recipe'        => 'nullable|array',
-                'recipe.*.inventory_id' => 'numeric|exists:inventory,id',
-                'recipe.*.quantity_needed' => 'numeric|min:0.01',
-            ]);
+        // A "new category" typed by the user replaces the dropdown value.
+        if ($request->input('category') === '__new__') {
+            $request->merge(['category' => trim((string) $request->input('new_category'))]);
+        }
 
+        $validated = $request->validate([
+            'product_name'     => 'required|string|max:255|unique:products',
+            'description'      => 'nullable|string|max:1000',
+            'category'         => 'required|string|max:50',
+            'price'            => 'required|numeric|min:0',
+            'stock_quantity'   => 'nullable|integer|min:0',
+            'image'            => 'nullable|image|max:2048',
+            // Every product MUST have a recipe (at least one ingredient).
+            'recipe'                   => 'required|array|min:1',
+            'recipe.*.inventory_id'    => 'required|distinct|exists:inventory,id',
+            'recipe.*.quantity_needed' => 'required|numeric|min:0.01',
+        ], [
+            'recipe.required'                   => 'Add at least one ingredient - every product needs a recipe.',
+            'recipe.min'                        => 'Add at least one ingredient - every product needs a recipe.',
+            'recipe.*.inventory_id.required'    => 'Pick an inventory item for every ingredient row.',
+            'recipe.*.inventory_id.distinct'    => 'The same ingredient is listed more than once.',
+            'recipe.*.quantity_needed.required' => 'Enter the quantity needed for every ingredient row.',
+        ]);
+
+        $startingStock = (int) ($validated['stock_quantity'] ?? 0);
+
+        try {
             DB::beginTransaction();
 
-            $imagePath = null;
-            if ($request->hasFile('image')) {
-                $imagePath = $request->file('image')->store('products', 'public');
+            // Lock the ingredient rows so two requests can't spend the same flour.
+            $inventory = Inventory::whereIn('id', collect($validated['recipe'])->pluck('inventory_id'))
+                ->lockForUpdate()->get()->keyBy('id');
+
+            // Max units the current raw materials can make.
+            $maxMakeable = Product::maxProducibleFrom(collect($validated['recipe'])->map(fn ($r) => [
+                'available' => $inventory[$r['inventory_id']]->quantity_on_hand,
+                'needed'    => $r['quantity_needed'],
+            ])->all());
+
+            if ($startingStock > $maxMakeable) {
+                throw new \Exception("Starting stock of {$startingStock} is more than your raw materials can make. You can make at most {$maxMakeable}.");
             }
 
+            $imagePath = $request->hasFile('image')
+                ? $request->file('image')->store('products', 'public')
+                : null;
+
+            // Every product starts at the Matina commissary; branch transfers move it later.
             $product = Product::create([
                 'product_name'   => $validated['product_name'],
                 'description'    => $validated['description'] ?? null,
-                'category'       => $validated['category'] ?? null,
+                'category'       => $validated['category'],
                 'price'          => $validated['price'],
-                'stock_quantity' => $validated['stock_quantity'] ?? 0,
-                'site_id'        => $validated['site_id'] ?? null,
+                'stock_quantity' => $startingStock,
+                'site_id'        => Site::matina()?->id,
                 'status'         => 'active',
                 'image_path'     => $imagePath,
             ]);
 
-            if (! empty($validated['recipe'])) {
-                $materials = [];
-                foreach ($validated['recipe'] as $recipe_item) {
-                    if (empty($recipe_item['inventory_id'])) continue;
+            $materials = [];
+            foreach ($validated['recipe'] as $row) {
+                $materials[$row['inventory_id']] = ['quantity_needed' => $row['quantity_needed']];
+            }
+            $product->materials()->attach($materials);
 
-                    $inventory_id    = $recipe_item['inventory_id'];
-                    $quantity_needed = $recipe_item['quantity_needed'];
-                    $inventory = Inventory::findOrFail($inventory_id);
+            // Starting finished stock = units already baked, so use up their ingredients.
+            if ($startingStock > 0) {
+                foreach ($validated['recipe'] as $row) {
+                    $item = $inventory[$row['inventory_id']];
+                    $used = round($row['quantity_needed'] * $startingStock, 2);
 
-                    if ($inventory->quantity_on_hand < $quantity_needed) {
-                        throw new \Exception(
-                            "Insufficient {$inventory->item_name}. Available: {$inventory->quantity_on_hand}, Needed: {$quantity_needed}"
-                        );
-                    }
-
-                    $inventory->update([
-                        'quantity_on_hand' => $inventory->quantity_on_hand - $quantity_needed
-                    ]);
+                    $item->decrement('quantity_on_hand', $used);
 
                     InventoryLog::create([
-                        'inventory_id' => $inventory_id,
+                        'inventory_id' => $item->id,
                         'type'         => 'used',
-                        'quantity'     => $quantity_needed,
-                        'reference'    => 'PRODUCT-CREATE',
-                        'notes'        => "Material used for product: {$product->product_name}",
+                        'quantity'     => $used,
+                        'ref_note'     => 'PRODUCT-CREATE',
+                        'notes'        => "Used for {$startingStock} x {$product->product_name} (starting stock)",
                         'user_id'      => auth()->id(),
                     ]);
-
-                    $materials[$inventory_id] = ['quantity_used' => $quantity_needed];
-                }
-
-                if (! empty($materials)) {
-                    $product->materials()->attach($materials);
                 }
             }
 
             DB::commit();
 
             return redirect()->route('products.index')
-                ->with('success', "Product '{$product->product_name}' created successfully! Materials have been deducted from inventory.");
+                ->with('success', "Product '{$product->product_name}' created."
+                    . ($startingStock > 0 ? ' Raw materials for the starting stock were deducted from inventory.' : ''));
         } catch (\Exception $e) {
             DB::rollBack();
             \Log::error('Product creation failed: ' . $e->getMessage());
@@ -115,10 +143,9 @@ class ProductController extends Controller
 
     public function edit(Product $product)
     {
-        $inventoryItems = Inventory::orderBy('item_name')->get();
-        $sites = Site::all();
         $product->load('materials');
-        return view('products.edit', compact('product', 'inventoryItems', 'sites'));
+        $categories = $this->categoryOptions();
+        return view('products.edit', compact('product', 'categories'));
     }
 
     public function update(Request $request, Product $product)
@@ -127,9 +154,8 @@ class ProductController extends Controller
             $validated = $request->validate([
                 'product_name'  => 'required|string|max:255|unique:products,product_name,' . $product->id,
                 'description'   => 'nullable|string|max:1000',
-                'category'      => 'nullable|string|max:255',
+                'category'      => 'required|string|max:50',
                 'price'         => 'required|numeric|min:0',
-                'site_id'       => 'nullable|exists:sites,id',
                 'status'        => 'nullable|in:active,inactive',
                 'image'         => 'nullable|image|max:2048',
             ]);

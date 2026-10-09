@@ -41,15 +41,6 @@ input:focus,select:focus{border-color:#D9782C;background:#fff;}
         <label>Minimum Stock</label>
         <input type="number" name="minimum_stock" step="0.01" min="0" value="{{ $inventory->minimum_stock }}" required>
     </div>
-    <div>
-        <label>Site</label>
-        <select name="site_id">
-            <option value="">— Unassigned —</option>
-            @foreach($sites as $site)
-                <option value="{{ $site->id }}" {{ $inventory->site_id == $site->id ? 'selected' : '' }}>{{ $site->site_name }}</option>
-            @endforeach
-        </select>
-    </div>
 </div>
 <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:20px;">
     <a href="{{ route('inventory.index') }}" class="btn btn-outline">Cancel</a>

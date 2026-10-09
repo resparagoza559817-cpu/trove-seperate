@@ -14,10 +14,10 @@ class InventoryLog extends Model
     // ← FIX: was wrong before — had Inventory fields instead of InventoryLog fields
     protected $fillable = [
         'inventory_id',
-        'delivery_id',
+        'order_id',
         'type',        // received | used | damaged | adjustment
         'quantity',
-        'reference',
+        'ref_note',
         'notes',
         'user_id',
     ];
@@ -30,6 +30,5 @@ class InventoryLog extends Model
     ];
 
     public function inventory() { return $this->belongsTo(Inventory::class); }
-    public function delivery()  { return $this->belongsTo(Delivery::class); }
     public function user()      { return $this->belongsTo(User::class); }
 }

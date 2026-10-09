@@ -49,7 +49,7 @@ td { padding: 12px; border-bottom: 1px solid var(--border); }
                 <thead><tr><th>Material</th><th style="text-align:right;">Quantity Used</th><th style="text-align:center;">Unit</th></tr></thead>
                 <tbody>
                     @foreach ($product->materials as $material)
-                        <tr><td style="font-weight:500;">{{ $material->item_name }}</td><td style="text-align:right;">{{ number_format($material->pivot->quantity_used, 2) }}</td><td style="text-align:center;">{{ $material->unit }}</td></tr>
+                        <tr><td style="font-weight:500;">{{ $material->item_name }}</td><td style="text-align:right;">{{ number_format($material->pivot->quantity_needed, 2) }}</td><td style="text-align:center;">{{ $material->unit }}</td></tr>
                     @endforeach
                 </tbody>
             </table>
